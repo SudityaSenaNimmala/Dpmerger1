@@ -741,12 +741,19 @@ app.get('/', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+
+// Health check endpoint for Render
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Bind to 0.0.0.0 for Render (required for external access)
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`
 ╔═══════════════════════════════════════════════════════════╗
 ║     WashPost Combined Dashboard Server                    ║
 ╠═══════════════════════════════════════════════════════════╣
-║  Server running at: http://localhost:${PORT}                 ║
+║  Server running on port: ${String(PORT).padEnd(30)}║
 ║  Metabase URL: ${METABASE_URL.padEnd(40)}║
 ║  Main Dashboards: ${DASHBOARD_IDS.join(', ').padEnd(37)}║
 ╚═══════════════════════════════════════════════════════════╝

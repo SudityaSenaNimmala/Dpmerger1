@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: metabase-dashboard
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: METABASE_URL
+        sync: false
+      - key: METABASE_USERNAME
+        sync: false
+      - key: METABASE_PASSWORD
+        sync: false
+      - key: DASHBOARD_IDS
+        sync: false
