@@ -185,10 +185,53 @@ async function makeMetabaseRequest(method, endpoint, data = null) {
     }
 }
 
+// Cache for card metadata (template tags)
+const cardMetadataCache = {};
+
+// Get card metadata including template tags
+async function getCardMetadata(cardId) {
+    if (cardMetadataCache[cardId]) {
+        return cardMetadataCache[cardId];
+    }
+    
+    try {
+        const card = await makeMetabaseRequest('GET', `/api/card/${cardId}`);
+        const templateTags = card.dataset_query?.native?.['template-tags'] || {};
+        cardMetadataCache[cardId] = {
+            name: card.name,
+            templateTags: Object.keys(templateTags),
+            templateTagsDetails: templateTags
+        };
+        return cardMetadataCache[cardId];
+    } catch (error) {
+        console.error(`Failed to get card ${cardId} metadata:`, error.message);
+        return { templateTags: [], templateTagsDetails: {} };
+    }
+}
+
 // Query a Metabase card with parameters
 async function queryCard(cardId, parameters = {}) {
     try {
-        const paramArray = Object.entries(parameters).map(([key, value]) => ({
+        // First get the card's template tags to know what parameters it accepts
+        const metadata = await getCardMetadata(cardId);
+        
+        // Only include parameters that match actual template tags
+        const validParams = {};
+        for (const [key, value] of Object.entries(parameters)) {
+            // Check various possible tag names (Metabase can be inconsistent)
+            const possibleTags = [key, key.toLowerCase(), key.replace(/([A-Z])/g, '_$1').toLowerCase()];
+            const matchingTag = metadata.templateTags.find(tag => 
+                possibleTags.includes(tag) || 
+                possibleTags.includes(tag.toLowerCase()) ||
+                tag.toLowerCase().includes(key.toLowerCase())
+            );
+            
+            if (matchingTag) {
+                validParams[matchingTag] = value;
+            }
+        }
+        
+        const paramArray = Object.entries(validParams).map(([key, value]) => ({
             type: 'category',
             value: value,
             target: ['variable', ['template-tag', key]]
@@ -200,7 +243,23 @@ async function queryCard(cardId, parameters = {}) {
         
         return result;
     } catch (error) {
-        console.error(`Failed to query card ${cardId}:`, error.message);
+        // Log more details about the error
+        const errorDetails = error.response?.data || error.message;
+        console.error(`Failed to query card ${cardId}:`, JSON.stringify(errorDetails));
+        return null;
+    }
+}
+
+// Query card without any parameters (for cards that don't need filtering)
+async function queryCardNoParams(cardId) {
+    try {
+        const result = await makeMetabaseRequest('POST', `/api/card/${cardId}/query`, {
+            parameters: []
+        });
+        return result;
+    } catch (error) {
+        const errorDetails = error.response?.data || error.message;
+        console.error(`Failed to query card ${cardId} (no params):`, JSON.stringify(errorDetails));
         return null;
     }
 }
@@ -504,38 +563,50 @@ app.get('/api/jobs', async (req, res) => {
         console.log(`Fetching jobs - status: ${status || 'ALL'}, database: ${database || 'ALL'}`);
         
         const allJobs = [];
-        const dbsToQuery = database 
+        const dbsToQuery = database && database !== 'ALL'
             ? [{ name: database, config: DASHBOARD_CONFIG.jobDetails[database] }]
             : Object.entries(DASHBOARD_CONFIG.jobDetails).map(([name, config]) => ({ name, config }));
         
-        for (const db of dbsToQuery) {
-            if (!db.config) continue;
+        // Process databases in parallel for better performance
+        const results = await Promise.all(dbsToQuery.map(async (db) => {
+            if (!db.config) return [];
             
             try {
-                // Query the job list card with status filter
-                const result = await queryCard(db.config.jobListCardId, 
-                    status && status !== 'ALL' ? { jobStatus: status } : {}
-                );
+                // First try with status parameter, if that fails try without
+                let result;
+                if (status && status !== 'ALL') {
+                    result = await queryCard(db.config.jobListCardId, { jobStatus: status });
+                }
+                
+                // If no result or status is ALL, query without params
+                if (!result || !result.data) {
+                    result = await queryCardNoParams(db.config.jobListCardId);
+                }
                 
                 if (result && result.data && result.data.rows) {
                     const cols = result.data.cols.map(c => c.name);
                     
-                    result.data.rows.forEach(row => {
+                    return result.data.rows.map(row => {
                         const job = { database: db.name };
                         cols.forEach((col, i) => {
                             job[col] = row[i];
                         });
-                        
-                        // Filter by status if needed
-                        if (!status || status === 'ALL' || job.jobStatus === status) {
-                            allJobs.push(job);
-                        }
+                        return job;
+                    }).filter(job => {
+                        // Client-side filter if status param didn't work
+                        if (!status || status === 'ALL') return true;
+                        return job.jobStatus === status || job.job_status === status;
                     });
                 }
+                return [];
             } catch (error) {
                 console.error(`Failed to fetch jobs from ${db.name}:`, error.message);
+                return [];
             }
-        }
+        }));
+        
+        // Flatten results
+        results.forEach(jobs => allJobs.push(...jobs));
         
         res.json({
             jobs: allJobs,
@@ -556,36 +627,50 @@ app.get('/api/workspaces', async (req, res) => {
         console.log(`Fetching workspaces - status: ${status || 'ALL'}, database: ${database || 'ALL'}`);
         
         const allWorkspaces = [];
-        const dbsToQuery = database 
+        const dbsToQuery = database && database !== 'ALL'
             ? [{ name: database, config: DASHBOARD_CONFIG.workspaceDetails[database] }]
             : Object.entries(DASHBOARD_CONFIG.workspaceDetails).map(([name, config]) => ({ name, config }));
         
-        for (const db of dbsToQuery) {
-            if (!db.config) continue;
+        // Process databases in parallel for better performance
+        const results = await Promise.all(dbsToQuery.map(async (db) => {
+            if (!db.config) return [];
             
             try {
-                const result = await queryCard(db.config.workspaceListCardId,
-                    status && status !== 'ALL' ? { processStatus: status } : {}
-                );
+                // First try with status parameter, if that fails try without
+                let result;
+                if (status && status !== 'ALL') {
+                    result = await queryCard(db.config.workspaceListCardId, { processStatus: status });
+                }
+                
+                // If no result or status is ALL, query without params
+                if (!result || !result.data) {
+                    result = await queryCardNoParams(db.config.workspaceListCardId);
+                }
                 
                 if (result && result.data && result.data.rows) {
                     const cols = result.data.cols.map(c => c.name);
                     
-                    result.data.rows.forEach(row => {
+                    return result.data.rows.map(row => {
                         const ws = { database: db.name };
                         cols.forEach((col, i) => {
                             ws[col] = row[i];
                         });
-                        
-                        if (!status || status === 'ALL' || ws.processStatus === status) {
-                            allWorkspaces.push(ws);
-                        }
+                        return ws;
+                    }).filter(ws => {
+                        // Client-side filter if status param didn't work
+                        if (!status || status === 'ALL') return true;
+                        return ws.processStatus === status || ws.process_status === status;
                     });
                 }
+                return [];
             } catch (error) {
                 console.error(`Failed to fetch workspaces from ${db.name}:`, error.message);
+                return [];
             }
-        }
+        }));
+        
+        // Flatten results
+        results.forEach(workspaces => allWorkspaces.push(...workspaces));
         
         res.json({
             workspaces: allWorkspaces,
@@ -613,12 +698,20 @@ app.get('/api/workspace/:workspaceId/details', async (req, res) => {
         
         const config = DASHBOARD_CONFIG.workspaceDetails[database];
         
+        // Try multiple possible parameter names for workspace ID
+        const workspaceParams = { 
+            moveWorkSpaceId: workspaceId, 
+            workspaceId: workspaceId,
+            workspace_id: workspaceId,
+            move_workspace_id: workspaceId
+        };
+        
         // Fetch all three status counts in parallel (like Metabase shows)
         const [fileFolderResult, hyperlinksResult, permissionsResult, totalFileSizeResult] = await Promise.all([
-            queryCard(config.fileFolderStatusCardId, { moveWorkSpaceId: workspaceId }),
-            queryCard(config.hyperlinksStatusCardId, { moveWorkSpaceId: workspaceId }),
-            queryCard(config.permissionsStatusCardId, { moveWorkSpaceId: workspaceId }),
-            queryCard(config.totalFileSizeCardId, { workspaceId: workspaceId })
+            queryCard(config.fileFolderStatusCardId, workspaceParams),
+            queryCard(config.hyperlinksStatusCardId, workspaceParams),
+            queryCard(config.permissionsStatusCardId, workspaceParams),
+            queryCard(config.totalFileSizeCardId, workspaceParams)
         ]);
         
         res.json({
@@ -649,16 +742,19 @@ app.get('/api/workspace/:workspaceId/files', async (req, res) => {
         
         const config = DASHBOARD_CONFIG.fileFolderInfo[database];
         
+        // Try multiple possible parameter names
+        const params = { 
+            workspaceId: workspaceId,
+            moveWorkSpaceId: workspaceId,
+            workspace_id: workspaceId,
+            processStatus: status,
+            process_status: status
+        };
+        
         // Fetch both conflicts breakdown and files list
         const [conflictsResult, filesResult] = await Promise.all([
-            queryCard(config.conflictsCardId, { 
-                workspaceId: workspaceId,
-                processStatus: status || 'CONFLICT'
-            }),
-            queryCard(config.filesListCardId, { 
-                workspaceId: workspaceId,
-                processStatus: status || 'PROCESSED'
-            })
+            queryCard(config.conflictsCardId, params),
+            queryCard(config.filesListCardId, params)
         ]);
         
         res.json({
@@ -688,10 +784,16 @@ app.get('/api/workspace/:workspaceId/hyperlinks', async (req, res) => {
         
         const config = DASHBOARD_CONFIG.hyperlinks[database];
         
-        const result = await queryCard(config.hyperlinksListCardId, { 
+        // Try multiple possible parameter names
+        const params = { 
             moveWorkSpaceId: workspaceId,
-            processStatus: status || 'ALL'
-        });
+            workspaceId: workspaceId,
+            workspace_id: workspaceId,
+            processStatus: status,
+            process_status: status
+        };
+        
+        const result = await queryCard(config.hyperlinksListCardId, params);
         
         res.json({
             workspaceId,
@@ -718,10 +820,16 @@ app.get('/api/workspace/:workspaceId/permissions', async (req, res) => {
         
         const config = DASHBOARD_CONFIG.permissions[database];
         
-        const result = await queryCard(config.permissionsListCardId, { 
+        // Try multiple possible parameter names
+        const params = { 
             moveWorkSpaceId: workspaceId,
-            processStatus: status || 'ALL'
-        });
+            workspaceId: workspaceId,
+            workspace_id: workspaceId,
+            processStatus: status,
+            process_status: status
+        };
+        
+        const result = await queryCard(config.permissionsListCardId, params);
         
         res.json({
             workspaceId,
