@@ -114,7 +114,7 @@ function renderFileSizeChart(data) {
 function renderDatabaseBreakdown(metrics) {
     if (!elements.databaseGrid) return;
     const dbs = ['WP1','WP2','WP3','WP4','WP5'];
-    const names = ['Washington Post 1','Washington Post 2','Washington Post 3','Washington Post 4','Washington Post 5'];
+    const names = ['WashingtonPost 1','WashingtonPost 2','WashingtonPost 3','WashingtonPost 4','WashingtonPost 5'];
     let html = '';
     dbs.forEach((db,i) => {
         const total = metrics.totalJobs.find(m => m.dbIndex === i)?.value || 0;
@@ -323,8 +323,8 @@ function updateBreadcrumb(title) {
     if (!elements.breadcrumb) return;
     if (state.currentView === 'main') elements.breadcrumb.innerHTML = '<span class="breadcrumb-item active">Combined Dashboard</span>';
     else if (['workspace-detail','files','hyperlinks','permissions'].includes(state.currentView))
-        elements.breadcrumb.innerHTML = '<span class="breadcrumb-item" onclick="navigateTo(\'main\',\'Combined Dashboard\')">Dashboard</span><span class="breadcrumb-separator">â€º</span><span class="breadcrumb-item" onclick="navigateToWorkspaces(\'ALL\')">Workspaces</span><span class="breadcrumb-separator">â€º</span><span class="breadcrumb-item active">'+title+'</span>';
-    else elements.breadcrumb.innerHTML = '<span class="breadcrumb-item" onclick="navigateTo(\'main\',\'Combined Dashboard\')">Dashboard</span><span class="breadcrumb-separator">â€º</span><span class="breadcrumb-item active">'+title+'</span>';
+        elements.breadcrumb.innerHTML = '<span class="breadcrumb-item" onclick="navigateTo(\'main\',\'Combined Dashboard\')">Dashboard</span><span class="breadcrumb-separator">›</span><span class="breadcrumb-item" onclick="navigateToWorkspaces(\'ALL\')">Workspaces</span><span class="breadcrumb-separator">›</span><span class="breadcrumb-item active">'+title+'</span>';
+    else elements.breadcrumb.innerHTML = '<span class="breadcrumb-item" onclick="navigateTo(\'main\',\'Combined Dashboard\')">Dashboard</span><span class="breadcrumb-separator">›</span><span class="breadcrumb-item active">'+title+'</span>';
 }
 
 function showLoading(show) { if (show) { elements.loadingState?.classList.remove('hidden'); elements.errorState?.classList.add('hidden'); elements.mainView?.classList.add('hidden'); } else elements.loadingState?.classList.add('hidden'); }

@@ -28,7 +28,7 @@ const DASHBOARD_CONFIG = {
         shortName: `WP${index + 1}`,
         index: index
     })),
-    // Job details dashboards - CORRECT card IDs for job list
+    // Job details dashboards
     jobDetails: {
         'WP1': { dashboardId: 29, jobListCardId: 143 },
         'WP2': { dashboardId: 37, jobListCardId: 170 },
@@ -36,7 +36,7 @@ const DASHBOARD_CONFIG = {
         'WP4': { dashboardId: 55, jobListCardId: 217 },
         'WP5': { dashboardId: 76, jobListCardId: 288 }
     },
-    // Workspace details dashboards - CORRECT card IDs from Metabase
+    // Workspace details dashboards
     workspaceDetails: {
         'WP1': { 
             dashboardId: 30, 
@@ -84,7 +84,7 @@ const DASHBOARD_CONFIG = {
             totalFileSizeCardId: 297
         }
     },
-    // File/Folder Info dashboards - CORRECT card IDs
+    // File/Folder Info dashboards
     fileFolderInfo: {
         'WP1': { dashboardId: 27, conflictsCardId: 136, filesListCardId: 138 },
         'WP2': { dashboardId: 35, conflictsCardId: 163, filesListCardId: 165 },
@@ -92,7 +92,7 @@ const DASHBOARD_CONFIG = {
         'WP4': { dashboardId: 53, conflictsCardId: 210, filesListCardId: 212 },
         'WP5': { dashboardId: 74, conflictsCardId: 281, filesListCardId: 283 }
     },
-    // HyperLinks dashboards - CORRECT card IDs
+    // HyperLinks dashboards
     hyperlinks: {
         'WP1': { dashboardId: 28, hyperlinksListCardId: 139 },
         'WP2': { dashboardId: 36, hyperlinksListCardId: 166 },
@@ -100,7 +100,7 @@ const DASHBOARD_CONFIG = {
         'WP4': { dashboardId: 54, hyperlinksListCardId: 213 },
         'WP5': { dashboardId: 75, hyperlinksListCardId: 284 }
     },
-    // Permissions/Collaboration dashboards - CORRECT card IDs
+    // Permissions/Collaboration dashboards
     permissions: {
         'WP1': { dashboardId: 31, permissionsListCardId: 148 },
         'WP2': { dashboardId: 39, permissionsListCardId: 175 },
@@ -196,8 +196,19 @@ async function getCardMetadata(cardId) {
     
     try {
         const card = await makeMetabaseRequest('GET', `/api/card/${cardId}`);
-        const templateTags = card.dataset_query?.native?.['template-tags'] || 
-                            card.dataset_query?.stages?.[0]?.['template-tags'] || {};
+        // Try multiple locations for template tags (different Metabase versions/query types)
+        let templateTags = card.dataset_query?.native?.['template-tags'] || {};
+        
+        // For MongoDB queries, template tags might be in stages
+        if (Object.keys(templateTags).length === 0 && card.dataset_query?.stages) {
+            const stages = card.dataset_query.stages;
+            if (stages[0] && stages[0]['template-tags']) {
+                templateTags = stages[0]['template-tags'];
+            }
+        }
+        
+        console.log(`Card ${cardId} template tags:`, Object.keys(templateTags));
+        
         cardMetadataCache[cardId] = {
             name: card.name,
             templateTags: Object.keys(templateTags),
@@ -216,39 +227,23 @@ async function queryCard(cardId, parameters = {}) {
         // First get the card's template tags to know what parameters it accepts
         const metadata = await getCardMetadata(cardId);
         
-        console.log(`Card ${cardId} (${metadata.name}) has template tags:`, metadata.templateTags);
-        
-        // Build parameters array - for required tags, use "ALL" as default
+        // Build parameter array - match parameters to template tags
         const paramArray = [];
-        
-        for (const tagName of metadata.templateTags) {
-            // Find matching parameter from input
-            let value = null;
+        for (const [key, value] of Object.entries(parameters)) {
+            if (value === undefined || value === null || value === '') continue;
             
-            // Check various naming conventions
-            for (const [key, val] of Object.entries(parameters)) {
-                if (tagName === key || 
-                    tagName.toLowerCase() === key.toLowerCase() ||
-                    tagName.replace(/_/g, '').toLowerCase() === key.replace(/_/g, '').toLowerCase()) {
-                    value = val;
-                    break;
-                }
+            // Check if this parameter matches any template tag (case-insensitive)
+            const matchingTag = metadata.templateTags.find(tag => 
+                tag.toLowerCase() === key.toLowerCase()
+            );
+            
+            if (matchingTag) {
+                paramArray.push({
+                    type: 'category',
+                    value: value,
+                    target: ['variable', ['template-tag', matchingTag]]
+                });
             }
-            
-            // If no value provided, use "ALL" as default (Metabase cards expect this)
-            if (value === null || value === undefined || value === '') {
-                value = 'ALL';
-            }
-            
-            // Determine the parameter type based on tag details
-            const tagDetails = metadata.templateTagsDetails[tagName];
-            const paramType = tagDetails?.type === 'text' ? 'text' : 'category';
-            
-            paramArray.push({
-                type: paramType,
-                value: value,
-                target: ['variable', ['template-tag', tagName]]
-            });
         }
         
         console.log(`Querying card ${cardId} with params:`, JSON.stringify(paramArray));
@@ -260,42 +255,22 @@ async function queryCard(cardId, parameters = {}) {
         return result;
     } catch (error) {
         // Log more details about the error
-        const errorDetails = error.response?.data?.error || error.response?.data || error.message;
-        console.error(`Failed to query card ${cardId}:`, errorDetails);
+        const errorDetails = error.response?.data || error.message;
+        console.error(`Failed to query card ${cardId}:`, JSON.stringify(errorDetails));
         return null;
     }
 }
 
-// Query card with specific status filter
-async function queryCardWithStatus(cardId, status = 'ALL') {
+// Query card without any parameters (for cards that don't need filtering)
+async function queryCardNoParams(cardId) {
     try {
-        const metadata = await getCardMetadata(cardId);
-        
-        const paramArray = [];
-        for (const tagName of metadata.templateTags) {
-            const tagDetails = metadata.templateTagsDetails[tagName];
-            const paramType = tagDetails?.type === 'text' ? 'text' : 'category';
-            
-            // Use the provided status for status-related tags, "ALL" for others
-            let value = 'ALL';
-            if (tagName.toLowerCase().includes('status')) {
-                value = status || 'ALL';
-            }
-            
-            paramArray.push({
-                type: paramType,
-                value: value,
-                target: ['variable', ['template-tag', tagName]]
-            });
-        }
-        
         const result = await makeMetabaseRequest('POST', `/api/card/${cardId}/query`, {
-            parameters: paramArray
+            parameters: []
         });
-        
         return result;
     } catch (error) {
-        console.error(`Failed to query card ${cardId} with status ${status}:`, error.message);
+        const errorDetails = error.response?.data || error.message;
+        console.error(`Failed to query card ${cardId} (no params):`, JSON.stringify(errorDetails));
         return null;
     }
 }
@@ -596,8 +571,9 @@ app.get('/api/combined-data', async (req, res) => {
 app.get('/api/jobs', async (req, res) => {
     try {
         const { status, database } = req.query;
-        const statusFilter = status || 'ALL';
-        console.log(`Fetching jobs - status: ${statusFilter}, database: ${database || 'ALL'}`);
+        // Use "ALL" as default - the Metabase cards require this parameter
+        const jobStatus = status || 'ALL';
+        console.log(`Fetching jobs - status: ${jobStatus}, database: ${database || 'ALL'}`);
         
         const allJobs = [];
         const dbsToQuery = database && database !== 'ALL'
@@ -609,12 +585,12 @@ app.get('/api/jobs', async (req, res) => {
             if (!db.config) return [];
             
             try {
-                // Query with the status parameter (use "ALL" to get all jobs)
-                const result = await queryCardWithStatus(db.config.jobListCardId, statusFilter);
+                // Always pass jobStatus parameter - cards require it
+                // "ALL" returns all jobs, specific status filters
+                const result = await queryCard(db.config.jobListCardId, { jobStatus: jobStatus });
                 
                 if (result && result.data && result.data.rows) {
                     const cols = result.data.cols.map(c => c.name);
-                    console.log(`Card ${db.config.jobListCardId} returned ${result.data.rows.length} rows with columns:`, cols);
                     
                     return result.data.rows.map(row => {
                         const job = { database: db.name };
@@ -637,7 +613,7 @@ app.get('/api/jobs', async (req, res) => {
         res.json({
             jobs: allJobs,
             total: allJobs.length,
-            filter: { status: statusFilter, database }
+            filter: { status: jobStatus, database }
         });
         
     } catch (error) {
@@ -650,8 +626,7 @@ app.get('/api/jobs', async (req, res) => {
 app.get('/api/workspaces', async (req, res) => {
     try {
         const { status, database } = req.query;
-        const statusFilter = status || 'ALL';
-        console.log(`Fetching workspaces - status: ${statusFilter}, database: ${database || 'ALL'}`);
+        console.log(`Fetching workspaces - status: ${status || 'ALL'}, database: ${database || 'ALL'}`);
         
         const allWorkspaces = [];
         const dbsToQuery = database && database !== 'ALL'
@@ -663,12 +638,19 @@ app.get('/api/workspaces', async (req, res) => {
             if (!db.config) return [];
             
             try {
-                // Query with the status parameter (use "ALL" to get all workspaces)
-                const result = await queryCardWithStatus(db.config.workspaceListCardId, statusFilter);
+                // First try with status parameter, if that fails try without
+                let result;
+                if (status && status !== 'ALL') {
+                    result = await queryCard(db.config.workspaceListCardId, { processStatus: status });
+                }
+                
+                // If no result or status is ALL, query without params
+                if (!result || !result.data) {
+                    result = await queryCardNoParams(db.config.workspaceListCardId);
+                }
                 
                 if (result && result.data && result.data.rows) {
                     const cols = result.data.cols.map(c => c.name);
-                    console.log(`Card ${db.config.workspaceListCardId} returned ${result.data.rows.length} rows with columns:`, cols);
                     
                     return result.data.rows.map(row => {
                         const ws = { database: db.name };
@@ -676,6 +658,10 @@ app.get('/api/workspaces', async (req, res) => {
                             ws[col] = row[i];
                         });
                         return ws;
+                    }).filter(ws => {
+                        // Client-side filter if status param didn't work
+                        if (!status || status === 'ALL') return true;
+                        return ws.processStatus === status || ws.process_status === status;
                     });
                 }
                 return [];
@@ -691,7 +677,7 @@ app.get('/api/workspaces', async (req, res) => {
         res.json({
             workspaces: allWorkspaces,
             total: allWorkspaces.length,
-            filter: { status: statusFilter, database }
+            filter: { status, database }
         });
         
     } catch (error) {
@@ -875,7 +861,7 @@ app.get('/health', (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`
 ╔═══════════════════════════════════════════════════════════╗
-║     WashPost Combined Dashboard Server                    ║
+║     WashingtonPost Combined Dashboard Server              ║
 ╠═══════════════════════════════════════════════════════════╣
 ║  Server running on port: ${String(PORT).padEnd(30)}║
 ║  Metabase URL: ${METABASE_URL.padEnd(40)}║
