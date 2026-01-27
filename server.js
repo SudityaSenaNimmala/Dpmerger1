@@ -239,8 +239,8 @@ async function queryCard(cardId, parameters = {}) {
             
             if (matchingTag) {
                 paramArray.push({
-                    type: 'category',
-                    value: value,
+            type: 'category',
+            value: value,
                     target: ['variable', ['template-tag', matchingTag]]
                 });
             }
